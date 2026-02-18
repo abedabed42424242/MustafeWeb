@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8" />
+	<meta name="viewport" content="width=device-width,initial-scale=1" />
+	<title>Bouncing Images</title>
+	<style>
+		html,body{height:100%;margin:0}
+		body{display:flex;align-items:center;justify-content:center;background:#111;color:#fff;font-family:system-ui,Segoe UI,Roboto,Arial}
+		.centerWrap{position:relative;width:180px;height:180px}
+		#centerImg{width:180px;height:180px;object-fit:cover;border-radius:8px;cursor:pointer;box-shadow:0 10px 30px rgba(0,0,0,.6);transition:transform .15s ease}
+		#centerImg:active{transform:scale(.98)}
+		#minimizeBtn{position:absolute;right:-10px;top:-10px;width:28px;height:28px;border-radius:50%;background:rgba(0,0,0,.6);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;cursor:pointer;box-shadow:0 4px 10px rgba(0,0,0,.4)}
+
+		/* When minimized, pin the center widget to the bottom-right */
+		body.minimized{justify-content:flex-end;align-items:flex-end}
+		body.minimized .centerWrap{position:fixed;right:14px;bottom:14px;z-index:8;transform:scale(.6);}
+		.spawn{position:fixed;object-fit:cover;border-radius:6px;pointer-events:auto;will-change:left,top;box-shadow:0 6px 20px rgba(0,0,0,.5)}
+		.tab{position:fixed;display:flex;align-items:center;gap:8px;padding:8px 10px;background:#fff;color:#000;border-radius:8px;box-shadow:0 8px 26px rgba(0,0,0,.45);pointer-events:auto;will-change:left,top}
+		.tab img{width:48px;height:48px;object-fit:cover;border-radius:6px}
+		.tab .path{font-size:12px;max-width:200px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+		.hud{position:fixed;left:12px;top:12px;background:rgba(0,0,0,.4);padding:8px 10px;border-radius:8px;font-size:13px}
+		.hint{position:fixed;right:12px;top:12px;background:rgba(0,0,0,.4);padding:8px 10px;border-radius:8px;font-size:13px}
+	</style>
+</head>
+<body>
+	<div class="hud">Batch size: <strong id="batchDisplay">2</strong></div>
+	<div class="hint">Mustafe Ahmed Virus</div>
+	<!-- Put your image file named image.jpg next to this HTML file. -->
+	<div class="centerWrap">
+			<img id="centerImg" src="" alt="center image" />
+		<div id="minimizeBtn" title="Minimize">—</div>
+
+    
+	</div>
+
+	<script>
+		// Settings
+		let batch = 2; // how many appear per burst
+		const totalToSpawn = 12; // total images spawned per click sequence
+		const burstDelay = 220; // ms between bursts
+
+		const center = document.getElementById('centerImg');
+		const batchDisplay = document.getElementById('batchDisplay');
+		batchDisplay.textContent = batch;
+
+		// Use local image files present in the workspace
+		const IMAGE_SRC = 'image.jpg.png';
+		const IMAGE2_SRC = 'image2.jpg.png';
+
+		// track whether center image has been clicked once
+		let centerClicked = false;
+
+		// set center image source from local file
+		center.src = IMAGE_SRC;
+
+		// Background music file (mustafa)
+		const BG_SRC = 'mustafa.mp3';
+		const bgAudio = new Audio(BG_SRC);
+		bgAudio.preload = 'auto';
+		bgAudio.volume = 1;
+		let bgLoopMode = false;
+		let bgIntroTimeout = null;
+		let bgPlaying = false; // track intended playback state reliably
+		const BG_INTRO_SECONDS = 3; // play intro for 3s
+		const BG_LOOP_RATE = 1.0; // faster playback rate for looping intro (adjustable)
+
+		function startBgIntroThenFastLoop() {
+			if (bgPlaying) return; // already playing
+			bgPlaying = true;
+			// play intro at normal speed
+			bgLoopMode = false;
+			bgAudio.playbackRate = 1.0;
+			bgAudio.currentTime = 0;
+			bgAudio.play().catch(()=>{});
+			// after intro, enable fast loop of first BG_INTRO_SECONDS
+			if (bgIntroTimeout) clearTimeout(bgIntroTimeout);
+			bgIntroTimeout = setTimeout(() => {
+				if (!bgPlaying) return; // user stopped during intro
+				bgLoopMode = true;
+				bgAudio.playbackRate = BG_LOOP_RATE;
+				// ensure loop restarts at beginning when reaching the intro end
+				if (bgAudio.currentTime >= BG_INTRO_SECONDS || bgAudio.currentTime === 0) {
+					bgAudio.currentTime = 0;
+				}
+				bgAudio.play().catch(()=>{});
+			}, BG_INTRO_SECONDS * 1000);
+		}
+
+		function stopBgAudio() {
+			bgPlaying = false;
+			bgLoopMode = false;
+			if (bgIntroTimeout) { clearTimeout(bgIntroTimeout); bgIntroTimeout = null; }
+			try { bgAudio.pause(); } catch (e) {}
+			try { bgAudio.currentTime = 0; } catch (e) {}
+			try { bgAudio.playbackRate = 1.0; } catch (e) {}
+		}
+
+		// When in loop mode and playing, keep the audio within the intro segment
+		bgAudio.addEventListener('timeupdate', () => {
+			if (!bgLoopMode || !bgPlaying) return;
+			if (bgAudio.currentTime >= BG_INTRO_SECONDS) {
+				bgAudio.currentTime = 0;
+			}
+		});
+
+		// --- Audio: small tones for clicks ---
+		let audioCtx = null;
+		function ensureAudio() {
+			if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+			return audioCtx;
+		}
+
+		function playTone(freq = 440, duration = 0.12, type = 'sine', volume = 0.12) {
+			const ctx = ensureAudio();
+			if (ctx.state === 'suspended') ctx.resume();
+			const o = ctx.createOscillator();
+			const g = ctx.createGain();
+			o.type = type;
+			o.frequency.value = freq;
+			g.gain.value = 0.0001;
+			o.connect(g);
+			g.connect(ctx.destination);
+			const now = ctx.currentTime;
+			g.gain.exponentialRampToValueAtTime(volume, now + 0.01);
+			o.start(now);
+			g.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+			o.stop(now + duration + 0.02);
+		}
+
+		// Toggle between 2 and 4 and start a spawn sequence (play sound)
+		center.addEventListener('click', () => {
+			if (centerClicked) return; // ignore subsequent clicks
+			centerClicked = true;
+			// visually indicate disabled (optional)
+			center.style.pointerEvents = 'none';
+			center.style.opacity = '0.8';
+
+			// play short tone
+			playTone(520, 0.12, 'sine', 0.12);
+
+			// toggle background music using reliable flag
+			if (!bgPlaying) {
+				startBgIntroThenFastLoop();
+			} else {
+				stopBgAudio();
+			}
+
+			batch = (batch === 2) ? 4 : 2;
+			batchDisplay.textContent = batch;
+			spawnSequence(totalToSpawn);
+		});
+
+		// Minimize toggle: pin the center widget but keep spawned images running
+		const minimizeBtn = document.getElementById('minimizeBtn');
+		minimizeBtn.addEventListener('click', (e) => {
+			e.stopPropagation(); // don't trigger spawn
+			document.body.classList.toggle('minimized');
+		});
+
+		// Array tracking moving images
+		const movers = [];
+
+		function spawnSequence(total) {
+			let spawned = 0;
+			const handle = setInterval(() => {
+				for (let i = 0; i < batch && spawned < total; i++) {
+					spawnImage();
+					spawned++;
+				}
+				if (spawned >= total) clearInterval(handle);
+			}, burstDelay);
+		}
+
+		function spawnImage() {
+			// choose which image to spawn (50% chance for image2)
+			const chosenSrc = (Math.random() < 0.5) ? IMAGE_SRC : IMAGE2_SRC;
+			const img = document.createElement('img');
+			img.src = chosenSrc;
+			img.className = 'spawn';
+			const size = 60 + Math.random() * 140; // varied sizes
+			img.style.width = size + 'px';
+			img.style.height = size + 'px';
+
+			// Start near center with small random offset
+			const startX = (window.innerWidth - size) / 2 + (Math.random() - 0.5) * 200;
+			const startY = (window.innerHeight - size) / 2 + (Math.random() - 0.5) * 200;
+			img.style.left = startX + 'px';
+			img.style.top = startY + 'px';
+
+			// Add to document
+			document.body.appendChild(img);
+
+			// Random velocity
+			const vx = (Math.random() * 2 - 1) * (1.5 + Math.random() * 3);
+			const vy = (Math.random() * 2 - 1) * (1.5 + Math.random() * 3);
+
+			// Add to movers array (track source so tabs/images keep correct thumbnail)
+			const mover = { el: img, x: startX, y: startY, vx, vy, w: size, h: size, src: img.src };
+			movers.push(mover);
+
+			// Ensure spawned copies sit above the center widget
+			img.style.zIndex = 20;
+
+			// Click a spawned image to remove it (play pop)
+			img.addEventListener('click', (e) => { e.stopPropagation(); playTone(900 + Math.random()*200, 0.12, 'square', 0.12); removeImage(mover); });
+		}
+
+		// Windows-style path to show inside tabs
+		const filePath = 'C:\\Users\\texoy\\Documents\\new\\image.jpg';
+
+		function makeTabElement(src, width, height, pathText) {
+			const el = document.createElement('div');
+			el.className = 'tab';
+			const thumb = document.createElement('img');
+			thumb.src = src;
+			const lbl = document.createElement('div');
+			lbl.className = 'path';
+			lbl.textContent = pathText;
+			el.appendChild(thumb);
+			el.appendChild(lbl);
+			return el;
+		}
+
+		function convertMoverToTab(m) {
+			if (!m || !m.el) return;
+			// create tab element and replace
+			const tab = makeTabElement(m.src || IMAGE_SRC, 160, 64, filePath);
+			tab.style.left = m.x + 'px';
+			tab.style.top = m.y + 'px';
+			tab.style.zIndex = 30;
+			if (m.el.parentNode) m.el.parentNode.replaceChild(tab, m.el);
+			m.el = tab;
+			m.w = tab.offsetWidth || 160;
+			m.h = tab.offsetHeight || 64;
+			// click to remove
+			m.el.addEventListener('click', (e) => { e.stopPropagation(); removeImage(m); });
+		}
+
+		function convertMoverToImage(m) {
+			if (!m || !m.el) return;
+			const img = document.createElement('img');
+			img.className = 'spawn';
+			img.src = m.src || IMAGE_SRC;
+			img.style.width = (60 + Math.random() * 140) + 'px';
+			img.style.height = img.style.width;
+			img.style.left = m.x + 'px';
+			img.style.top = m.y + 'px';
+			img.style.zIndex = 20;
+			if (m.el.parentNode) m.el.parentNode.replaceChild(img, m.el);
+			m.el = img;
+			m.w = parseFloat(img.style.width);
+			m.h = parseFloat(img.style.height);
+			img.addEventListener('click', (e) => { e.stopPropagation(); removeImage(m); });
+		}
+
+		// When page visibility changes, convert movers to 'tabs' when hidden and back when visible
+		document.addEventListener('visibilitychange', () => {
+			if (document.hidden) {
+				for (const m of movers.slice()) convertMoverToTab(m);
+			} else {
+				for (const m of movers.slice()) convertMoverToImage(m);
+			}
+		});
+
+		function removeImage(mover) {
+			const idx = movers.indexOf(mover);
+			if (idx !== -1) movers.splice(idx, 1);
+			if (mover.el && mover.el.parentNode) mover.el.parentNode.removeChild(mover.el);
+		}
+
+		// Physics loop
+		function step() {
+			for (let i = 0; i < movers.length; i++) {
+				const m = movers[i];
+				m.x += m.vx;
+				m.y += m.vy;
+
+				// Bounce on edges
+				if (m.x <= 0) { m.x = 0; m.vx = Math.abs(m.vx); }
+				if (m.y <= 0) { m.y = 0; m.vy = Math.abs(m.vy); }
+				if (m.x + m.w >= window.innerWidth) { m.x = window.innerWidth - m.w; m.vx = -Math.abs(m.vx); }
+				if (m.y + m.h >= window.innerHeight) { m.y = window.innerHeight - m.h; m.vy = -Math.abs(m.vy); }
+
+				// Slight random wiggle so movement feels lively
+				m.vx += (Math.random() - 0.5) * 0.08;
+				m.vy += (Math.random() - 0.5) * 0.08;
+
+				// Limit speed
+				const max = 8;
+				m.vx = Math.max(-max, Math.min(max, m.vx));
+				m.vy = Math.max(-max, Math.min(max, m.vy));
+
+				m.el.style.left = m.x + 'px';
+				m.el.style.top = m.y + 'px';
+			}
+			requestAnimationFrame(step);
+		}
+		requestAnimationFrame(step);
+
+		// Make sure items stay inside when the window resizes
+		window.addEventListener('resize', () => {
+			for (const m of movers) {
+				m.x = Math.min(m.x, window.innerWidth - m.w);
+				m.y = Math.min(m.y, window.innerHeight - m.h);
+			}
+		});
+
+		// Helpful fallback: if image fails to load, use a colored SVG placeholder
+		center.addEventListener('error', () => {
+			center.src = 'data:image/svg+xml;utf8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="400" height="400"><rect width="100%" height="100%" fill="#7b7b7b"/><text x="50%" y="50%" font-size="24" fill="#fff" text-anchor="middle" dominant-baseline="middle">image.jpg</text></svg>');
+		});
+	</script>
+</body>
+</html>
